@@ -4,10 +4,10 @@
 #include <omp.h>
 #include "common.h"
 
-typedef void (*matrix_multiply_t)(double*, double*, double*, size_t m, size_t c, size_t n);
+typedef void (*matrix_multiply_t)(const double*, const double*, double*, size_t m, size_t c, size_t n);
 
-void simple_multiply(double* A, double* B, double* C, size_t m, size_t c, size_t n) {
-
+void simple_multiply(const double* A, const double* B, double* C, size_t m, size_t c, size_t n) {
+	#pragma omp parallel for
 	for (size_t i = 0; i < m; ++i) {
 		for (size_t j = 0; j < n; ++j) {
 			register double res = 0.0;
@@ -22,7 +22,8 @@ void simple_multiply(double* A, double* B, double* C, size_t m, size_t c, size_t
 #define CACHE_SIZE (32*1024)
 // compute block size
 const size_t bs = static_cast<size_t>(sqrt(CACHE_SIZE/sizeof(double)/3));
-void block_multiply(double* A, double* B, double* C, size_t m, size_t c, size_t n) {
+void block_multiply(const double* A, const double* B, double* C, size_t m, size_t c, size_t n) {
+	#pragma omp parallel for
 	for (size_t i = 0; i < m; i += bs) {
 		for (size_t j = 0; j < n; j += bs) {	
 			// initialization of block (instead of element)
@@ -63,16 +64,18 @@ int main() {
 
 	matrix_multiply_t multiply = block_multiply;
 
-	clock_t start = clock();
+	//clock_t start = clock();
+	double start = omp_get_wtime();
 
 	multiply(A, B, C, m, n, m);
 
-	double elapsedTime = static_cast<double>(clock() - start) / CLOCKS_PER_SEC;
+	//double elapsedTime = static_cast<double>(clock() - start) / CLOCKS_PER_SEC;
+	double elapsedTime = omp_get_wtime() - start;
 	std::cout << "Elapsed time: " << elapsedTime << std::endl;
 
-	simple_multiply(A, B, D, m, n, m);
-	bool equal = are_arrays_equal(C, D, m*m);
-	std::cout << "Results are" << (equal ? " " : " not ") << "equal\n";
+	//simple_multiply(A, B, D, m, n, m);
+	//bool equal = are_arrays_equal(C, D, m*m);
+	//std::cout << "Results are" << (equal ? " " : " not ") << "equal\n";
 	//std::cout << "All are " << (are_all_zeros(C, m*m) ? "" : "not ") << "zeros\n";
 
 	return 0;

@@ -10,7 +10,7 @@ void random_double_array(double* array, size_t size, double a, double b) {
 }
 
 bool are_arrays_equal(double* a1, double* a2, size_t size) {
-	for (size_t n; n < size; ++n) {
+	for (size_t n = 0; n < size; ++n) {
 		register double r = (a1[n] - a2[n]);
 		if (r < -0.00001 || r > 0.00001) {
 			return false;
@@ -20,7 +20,7 @@ bool are_arrays_equal(double* a1, double* a2, size_t size) {
 }
 
 bool are_all_zeros(double* array, size_t size) {
-	for (size_t n; n < size; ++n) {
+	for (size_t n = 0; n < size; ++n) {
 		if (array[n] != 0.0) {
 			return false;
 		}
