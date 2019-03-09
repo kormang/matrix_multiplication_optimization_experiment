@@ -1,49 +1,57 @@
 #include <ctime>
 #include <cstring>
 #include <iostream>
-#include <omp.h>
 #include "common.h"
 
-// g++ -O2 -ffast-math -ftree-vectorize -fopenmp -o bin/matrix_multiply matrix_multiply.cpp -lgomp && bin/matrix_multiply
+#ifndef CACHE_SIZE
+#define CACHE_SIZE (32*1024)
+#endif
 
-typedef void (*matrix_multiply_t)(const double*, const double*, double*, size_t m, size_t c, size_t n);
+#ifdef USE_ALIGNED
+#define ALIGNED_ATTRIBUTE __attribute__ ((__aligned__(16)))
+#else
+#define ALIGNED_ATTRIBUTE
+#endif
 
-void simple_multiply(const double* A, const double* B, double* C, size_t m, size_t c, size_t n) {
+typedef double value_t ALIGNED_ATTRIBUTE;
+
+typedef void (*matrix_multiply_t)(const value_t*, const value_t*, value_t*, size_t m, size_t c, size_t n);
+
+void simple_multiply(const value_t* A, const value_t* B, value_t* C, size_t m, size_t c, size_t n) {
 	#pragma omp parallel for
 	for (size_t i = 0; i < m; ++i) {
-		for (size_t j = 0; j < n; ++j) {
-			register double res = 0.0;
-			for (size_t k = 0; k < c; k++) {
-				res += A[i*c + k] * B[k*n + j];
+		for (size_t k = 0; k < n; ++k) {
+			register value_t res = 0.0;
+			for (size_t j = 0; j < c; j++) {
+				res += A[i*c + j] * B[j*n + k];
 			}
-			C[i*n + j] = res;
+			C[i*n + k] = res;
 		}
 	}
 }
 
-#define CACHE_SIZE (32*1024)
 // compute block size
-const size_t bs = static_cast<size_t>(sqrt(CACHE_SIZE/sizeof(double)/3));
-void block_multiply(const double* A, const double* B, double* C, size_t m, size_t c, size_t n) {
+static const size_t bs = static_cast<size_t>(sqrt(CACHE_SIZE/sizeof(value_t)/3));
+
+void simple_block_multiply(const value_t* A, const value_t* B, value_t* C, size_t m, size_t c, size_t n) {
+        #pragma omp parallel for
+        for (size_t i = 0; i < m * n; ++i) {
+                C[i] = 0.0;
+        }
+
 	#pragma omp parallel for
 	for (size_t i = 0; i < m; i += bs) {
-		for (size_t j = 0; j < n; j += bs) {
-			// initialization of block (instead of element)
-			for (size_t p = 0; p < std::min(bs, m - i); p += 1) {
-				for (size_t q = 0; q < std::min(bs, n - j); q += 1) {
-					C[(i+p)*m + j + q] = 0.0;
-				}
-			}
+		for (size_t k = 0; k < n; k += bs) {
 			// multiplying and summing blocks (instead of separate elements)
-			for (size_t k = 0; k <= c; k += bs) {
+			for (size_t j = 0; j <= c; j += bs) {
 				// multiply two blocks and add result to resulting block (instead of separate elements)
-				for (size_t p = 0; p < std::min(bs, m - i); p += 1) {
-					for (size_t q = 0; q < std::min(bs, n - j); q += 1) {
-						register double res = 0.0;
-						for (size_t r = 0; r < std::min(bs, c - k); r += 1) {
-							res += A[(i+p)*c + k + r] * B[(k+r)*n + j + q];
+				for (size_t p = i; p < std::min(i+bs, m); ++p) {
+					for (size_t r = k; r < std::min(k+bs, n); ++r) {
+						register value_t res = 0.0;
+						for (size_t q = j; q < std::min(j+bs, c); ++q) {
+							res += A[p*c + q] * B[q*n + r];
 						}
-						C[(i+p)*n + j + q] += res;
+						C[p*n + r] += res;
 					}
 				}
 			}
@@ -51,7 +59,49 @@ void block_multiply(const double* A, const double* B, double* C, size_t m, size_
 	}
 
 }
-void block_row_multiply(const double* A, const double* B, double* C, size_t m, size_t c, size_t n) {
+
+void multiply_ijk(const value_t *A, const value_t *B, value_t *C, size_t m, size_t c, size_t n) {
+        #pragma omp parallel for
+        for (size_t i = 0; i < m * n; ++i) {
+                C[i] = 0.0;
+        }
+
+        #pragma omp parallel for
+        for (size_t i = 0; i < m; ++i) {
+                for (size_t j = 0; j < c; ++j) {
+                        const value_t Aij = A[i * c + j];
+                        for (size_t k = 0; k < n; ++k) {
+                                C[i * n + k] += Aij * B[j * n + k];
+                        }
+                }
+        }
+}
+
+void block_multiply_ijk_pqr(const value_t* A, const value_t* B, value_t* C, size_t m, size_t c, size_t n) {
+        #pragma omp parallel for
+        for (size_t i = 0; i < m*n; ++i) {
+                C[i] = 0.0;
+        }
+
+	#pragma omp parallel for
+	for (size_t i = 0; i < m; i += bs) {
+		for (size_t j = 0; j < c; j += bs) {
+			for (size_t k = 0; k < n; k += bs) {
+				for (size_t p = i; p < std::min(m, i+bs); ++p) {
+					for (size_t q = j; q < std::min(c, j+bs); ++q) {
+						const value_t Apq = A[p*c + q];
+						for (size_t r = k; r < std::min(n, k+bs); ++r) {
+							C[p*n + r] += Apq * B[q*n + r];
+						}
+					}
+				}
+			}
+		}
+	}
+
+}
+
+void block_row_multiply(const value_t* A, const value_t* B, value_t* C, size_t m, size_t c, size_t n) {
 	#pragma omp parallel for
 	for (size_t i = 0; i < m*n; ++i) {
 		C[i] = 0.0;
@@ -62,8 +112,9 @@ void block_row_multiply(const double* A, const double* B, double* C, size_t m, s
 		for (size_t j = 0; j < c; j += bs) {
 			for (size_t p = i; p < std::min(i+bs, m); ++p) {
 				for (size_t q = j; q < std::min(j+bs, c); ++q) {
+					const value_t Apq = A[p*c + q];
 					for (size_t r = 0; r < n; ++r) {
-						C[p*n + r] += A[p*c + q] * B[q*n + r];
+						C[p*n + r] += Apq * B[q*n + r];
 					}
 				}
 			}
@@ -71,36 +122,56 @@ void block_row_multiply(const double* A, const double* B, double* C, size_t m, s
 	}
 }
 
-int main() {
-	const size_t m = 1734;
-	const size_t n = 1347;
+static const matrix_multiply_t algorithms[] = { simple_multiply, simple_block_multiply, multiply_ijk, block_multiply_ijk_pqr, block_row_multiply };
+static const char* alg_names[] { "simple_multiply", "simple_block_multiply", "multiply_ijk", "block_multiply_ijk_pqr", "block_row_multiply" };
 
-	double* A = new double[m*n];
-	double* B = new double[m*n];
-	double* C = new double[m*m];
-	double* D = new double[m*m];
+int main(int argc, char* argv[]) {
 
-	random_double_array(A, m*n, -2.0, 2.0);
-	random_double_array(B, m*n, -2.0, 2.0);
+	if (argc < 6) {
+		std::cerr << "Usage: matrix_multiply <algorithm-number> <m1> <cdim> <n2> [<check-result>]\n";
+		return EXIT_FAILURE;
+	}
 
-	matrix_multiply_t multiply = block_row_multiply;
+	const int alg_num = atoi(argv[1]);
+	const size_t m1 = (size_t)atol(argv[2]);
+	const size_t cdim = (size_t)atol(argv[3]);
+	const size_t n2 = (size_t)atol(argv[4]);
+	const bool check_results = argc > 5 && atoi(argv[5]);
 
-	std::cout << "Block size is " << bs << std::endl;
+	std::cout << "Algorithm: " << alg_names[alg_num] << std::endl;
+	std::cout << "First matrix dimensions: " << m1 << "x" << cdim << std::endl;
+	std::cout << "Second matrix dimensions: " << cdim << "x" << n2 << std::endl;
+	std::cout << "Resulting matrix dimensions: " << m1 << "x" << n2 << std::endl;
+	std::cout << "Check results: " << check_results << std::endl;
+	std::cout << "Align of value_t: " << alignof(value_t) << std::endl;
+	std::cout << "CACHE_SIZE: " << CACHE_SIZE << std::endl;
+	std::cout << "Block size: " << bs << std::endl;
+
+	value_t* A = new value_t[m1*cdim];
+	value_t* B = new value_t[cdim*n2];
+	value_t* C = new value_t[m1*n2];
+	value_t* D = new value_t[m1*n2];
+
+	random_double_array(A, m1*cdim, -2.0, 2.0);
+	random_double_array(B, cdim*n2, -2.0, 2.0);
+
+	matrix_multiply_t multiply = algorithms[alg_num];
 
 	//clock_t start = clock();
-	double start = omp_get_wtime();
+	double start = get_time_sec();
 
-	multiply(A, B, C, m, n, m);
+	multiply(A, B, C, m1, cdim, n2);
 
-	//double elapsedTime = static_cast<double>(clock() - start) / CLOCKS_PER_SEC;
-	double elapsedTime = omp_get_wtime() - start;
-	std::cout << "Elapsed time: " << elapsedTime << std::endl;
+	//double elapsed_time = static_cast<double>(clock() - start) / CLOCKS_PER_SEC;
+	double elapsed_time = get_time_sec() - start;
+	std::cout << "Elapsed time: " << elapsed_time << std::endl;
 
-	simple_multiply(A, B, D, m, n, m);
-	bool equal = are_arrays_equal(C, D, m*m);
-	std::cout << "Results are" << (equal ? " " : " not ") << "equal\n";
-	//std::cout << "All are " << (are_all_zeros(C, m*m) ? "" : "not ") << "zeros\n";
-
+	if (check_results) {
+		simple_multiply(A, B, D, m1, cdim, n2);
+		bool equal = are_arrays_equal(C, D, m1*n2);
+		std::cout << "Results are" << (equal ? " " : " not ") << "equal\n";
+	}
 	return 0;
 
 }
+

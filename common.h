@@ -1,5 +1,13 @@
 #include <random>
- 
+#include <sys/time.h>
+
+double get_time_sec() {
+	struct timeval ct;
+        gettimeofday(&ct, 0);
+        /* return time in seconds */
+        return (static_cast<double>(ct.tv_sec) + static_cast<double>(ct.tv_usec) / 1E6);
+}
+
 void random_double_array(double* array, size_t size, double a, double b) {
     std::random_device rd;  //Will be used to obtain a seed for the random number engine
     std::mt19937 gen(rd()); //Standard mersenne_twister_engine seeded with rd()
